@@ -1,0 +1,91 @@
+---
+- name: Atualizar apt
+  apt:
+    update_cache: yes
+
+- name: Instalar dependências para Docker
+  apt:
+    name: ['apt-transport-https','ca-certificates','curl','software-properties-common','gnupg-agent']
+    state: present
+
+- name: Adicionar chave oficial Docker
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Adicionar repositório Docker
+  apt_repository:
+    repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+    state: present
+
+- name: Instalar Docker
+  apt:
+    name: ['docker-ce','docker-ce-cli','containerd.io']
+    state: latest
+
+- name: Instalar Docker Compose
+  get_url:
+    url: https://github.com/docker/compose/releases/download/v2.22.0/docker-compose-linux-x86_64
+    dest: /usr/local/bin/docker-compose
+    mode: '0755'
+
+- name: Adicionar usuário ao grupo docker
+  user:
+    name: ubuntu
+    groups: docker
+    append: yes
+
+# ----------------------------
+# Criar diretório para Docker Compose
+- name: Criar diretório para n8n + PostgreSQL
+  file:
+    path: /home/ubuntu/n8n_docker
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+# ----------------------------
+# Criar docker-compose.yml unificado
+- name: Criar docker-compose.yml
+  copy:
+    dest: /home/ubuntu/n8n_docker/docker-compose.yml
+    content: |
+      version: '3.8'
+      services:
+        db:
+          image: postgres:15
+          restart: always
+          environment:
+            POSTGRES_USER: {{ postgres_user }}
+            POSTGRES_PASSWORD: {{ postgres_password }}
+            POSTGRES_DB: {{ postgres_db }}
+          volumes:
+            - /home/ubuntu/n8n_docker/postgres-data:/var/lib/postgresql/data
+          ports:
+            - "5432:5432"
+
+        n8n:
+          image: n8nio/n8n:latest
+          restart: always
+          ports:
+            - "{{ n8n_port }}:5678"
+          environment:
+            DB_TYPE: postgres
+            DB_POSTGRESDB_HOST: db
+            DB_POSTGRESDB_PORT: 5432
+            DB_POSTGRESDB_DATABASE: {{ postgres_db }}
+            DB_POSTGRESDB_USER: {{ postgres_user }}
+            DB_POSTGRESDB_PASSWORD: {{ postgres_password }}
+            GENERIC_TIMEZONE: America/Sao_Paulo
+          depends_on:
+            - db
+          volumes:
+            - /home/ubuntu/n8n_docker:/home/node/.n8n
+
+# ----------------------------
+# Rodar Docker Compose
+- name: Rodar containers Docker
+  command: docker-compose up -d
+  args:
+    chdir: /home/ubuntu/n8n_docker

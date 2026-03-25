@@ -1,0 +1,6 @@
+.terraform/
+*.tfstate
+.terraform.lock.hcl
+workflows/
+terraform.tfstate.backup
+contexto.md

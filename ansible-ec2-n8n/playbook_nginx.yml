@@ -1,0 +1,111 @@
+---
+- name: Setup Nginx for n8n (com SSL opcional)
+  hosts: all
+  become: true
+
+  vars:
+    domain_name: agentezap.xyz
+    n8n_port: 5678
+    enable_ssl: false
+    certbot_email: tecnicocefet@gmail.com
+
+  tasks:
+
+    - name: Instalar Nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Garantir Nginx rodando
+      service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Criar config do Nginx
+      copy:
+        dest: /etc/nginx/sites-available/n8n
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain_name if enable_ssl else '_' }};
+
+              location / {
+                  proxy_pass http://localhost:{{ n8n_port }};
+                  proxy_http_version 1.1;
+
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+              }
+          }
+
+    - name: Ativar site
+      file:
+        src: /etc/nginx/sites-available/n8n
+        dest: /etc/nginx/sites-enabled/n8n
+        state: link
+        force: true
+
+    - name: Remover default
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Testar configuração nginx
+      command: nginx -t
+
+    - name: Reiniciar nginx
+      service:
+        name: nginx
+        state: restarted
+
+    # 🔍 Espera nginx responder LOCAL
+    - name: Esperar Nginx responder
+      uri:
+        url: http://localhost
+        status_code: 200
+      register: nginx_http
+      retries: 10
+      delay: 3
+      until: nginx_http.status == 200
+
+    - name: Debug HTTP
+      debug:
+        msg: "HTTP OK: {{ nginx_http.status }}"
+
+    # ---------------- SSL ---------------- #
+
+    - name: Instalar Certbot
+      apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+      when: enable_ssl
+
+    - name: Gerar certificado SSL
+      command: certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos -m {{ certbot_email }} --redirect
+      args:
+        creates: /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem
+      when: enable_ssl
+
+    - name: Validar HTTPS
+      uri:
+        url: https://{{ domain_name }}
+        validate_certs: no
+      register: https_check
+      retries: 5
+      delay: 5
+      until: https_check.status == 200
+      when: enable_ssl
+
+    - name: Debug HTTPS
+      debug:
+        msg: "HTTPS OK: {{ https_check.status }}"
+      when: enable_ssl
