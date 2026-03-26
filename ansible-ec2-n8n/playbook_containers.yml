@@ -107,3 +107,5 @@
     - name: Mostrar containers rodando
       debug:
         msg: "{{ docker_ps.stdout_lines }}"
+
+    

@@ -4,3 +4,14 @@
 workflows/
 terraform.tfstate.backup
 contexto.md
+*.crt
+*.key
+*.pem
+*.log
+*.tfvars
+*.tfvars.json
+*.tfvars.yaml
+*.tfvars.yml
+*.tfvars.tf
+
+notes.txt
