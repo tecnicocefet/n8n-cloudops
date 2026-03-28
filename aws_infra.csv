@@ -1,0 +1,5 @@
+Resource,ID,Type/Size,AZ,State,Associated
+EC2,i-0490afc7998cb050a,t3.micro,us-east-1a,running,
+EBS,vol-07779ca4fd15367e9,8GB,us-east-1a,in-use,
+EBS,vol-0508d602a0f787c2b,20GB,us-east-1a,in-use,
+EIP,3.222.208.89,,,Yes

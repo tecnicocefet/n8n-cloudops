@@ -3,17 +3,18 @@
   hosts: all
   become: true
 
+  # Carrega os segredos (Certificado e Chave)
+  vars_files:
+    - ../vars/secrets.yml
+
   vars:
     domain_name: agentezap.xyz
     n8n_port: 5678
     cert_path: /etc/ssl/certs/n8n.crt
     key_path: /etc/ssl/private/n8n.key
-    cert_local_path: ./n8n.crt
-    key_local_path: ./n8n.key
 
   tasks:
 
-    # ---------------- NGINX ---------------- #
     - name: Garantir Nginx instalado
       apt:
         name: nginx
@@ -26,25 +27,23 @@
         state: started
         enabled: true
 
-    # ---------------- CERTIFICADO ---------------- #
-    - name: Copiar certificado Cloudflare para EC2
+    - name: Criar arquivo do certificado na EC2 (do Vault)
       copy:
-        src: "{{ cert_local_path }}"
+        content: "{{ vault_cloudflare_cert }}"
         dest: "{{ cert_path }}"
         owner: root
         group: root
         mode: '0644'
 
-    - name: Copiar chave privada Cloudflare para EC2
+    - name: Criar arquivo da chave privada na EC2 (do Vault)
       copy:
-        src: "{{ key_local_path }}"
+        content: "{{ vault_cloudflare_key }}"
         dest: "{{ key_path }}"
         owner: root
         group: root
         mode: '0600'
 
-    # ---------------- CONFIG NGINX ---------------- #
-    - name: Criar config Nginx para N8N com HTTPS
+    - name: Criar config Nginx para N8N
       copy:
         dest: /etc/nginx/sites-available/n8n
         content: |
@@ -61,20 +60,29 @@
               ssl_certificate {{ cert_path }};
               ssl_certificate_key {{ key_path }};
 
+              # Otimização de segurança SSL
               ssl_protocols TLSv1.2 TLSv1.3;
-              ssl_ciphers HIGH:!aNULL:!MD5;
+              ssl_prefer_server_ciphers on;
+              ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+
+              # Aumentar limite de upload (importante para o n8n lidar com arquivos)
+              client_max_body_size 50M;
 
               location / {
                   proxy_pass http://localhost:{{ n8n_port }};
                   proxy_http_version 1.1;
-
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                   proxy_set_header X-Forwarded-Proto $scheme;
-
                   proxy_set_header Upgrade $http_upgrade;
                   proxy_set_header Connection "upgrade";
+                  
+                  # Timeout estendido para execuções longas do n8n
+                  proxy_connect_timeout 600;
+                  proxy_send_timeout 600;
+                  proxy_read_timeout 600;
+                  send_timeout 600;
               }
           }
       notify: Reload Nginx
@@ -90,50 +98,6 @@
       file:
         path: /etc/nginx/sites-enabled/default
         state: absent
-
-    # ---------------- REINÍCIO ANTES DO TESTE HTTPS ---------------- #
-    - name: Reiniciar Nginx antes do teste HTTPS
-      service:
-        name: nginx
-        state: restarted
-
-    # ---------------- TESTE HTTPS ---------------- #
-    - name: Testar HTTPS com 5 tentativas
-      uri:
-        url: "https://{{ domain_name }}"
-        validate_certs: yes
-      register: https_check
-      retries: 5
-      delay: 5
-      until: https_check.status == 200
-      ignore_errors: yes
-
-    - name: Reiniciar Nginx se HTTPS falhar e mostrar status
-      block:
-        - name: Reiniciar Nginx após falha
-          service:
-            name: nginx
-            state: restarted
-
-        - name: Testar HTTPS novamente após reinício
-          uri:
-            url: "https://{{ domain_name }}"
-            validate_certs: yes
-          register: https_check_final
-          retries: 5
-          delay: 5
-          until: https_check_final.status == 200
-          ignore_errors: yes
-
-        - name: Mostrar status final HTTPS
-          debug:
-            msg: "HTTPS final status: {{ https_check_final.status }}"
-      when: https_check.status != 200
-
-    - name: Mostrar status HTTPS inicial se OK
-      debug:
-        msg: "HTTPS OK: {{ https_check.status }}"
-      when: https_check.status == 200
 
   handlers:
     - name: Reload Nginx

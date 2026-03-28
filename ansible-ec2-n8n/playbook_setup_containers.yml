@@ -1,0 +1,159 @@
+---
+- name: Setup Docker, montar EBS e subir n8n + PostgreSQL (Seguro para GitHub)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  # 1. ESTA LINHA CARREGA SEUS SEGREDOS CRIPTOGRAFADOS
+  vars_files:
+    - ../vars/secrets.yml
+
+  vars:
+    # Caminhos no EBS
+    postgres_volume: /data/postgres-data
+    n8n_volume: /data/n8n-data
+    
+    # Configurações de Rede e DB
+    n8n_port: 5678
+    postgres_port: 5432
+    postgres_user: n8n
+    postgres_db: n8ndb
+    
+    # 2. AQUI CONECTAMOS AS VARIÁVEIS DO VAULT ÀS VARS DO PLAYBOOK
+    postgres_password: "{{ vault_postgres_password }}"
+    n8n_encryption_key: "{{ vault_n8n_encryption_key }}"
+
+    # UIDs dos containers (Postgres=999, n8n=1000)
+    postgres_uid: 999
+    n8n_uid: 1000
+
+  tasks:
+
+    # ---------------- DOCKER ---------------- #
+    - name: Atualizar cache apt
+      apt:
+        update_cache: yes
+
+    - name: Instalar dependências
+      apt:
+        name: [ca-certificates, curl, gnupg, lsb-release]
+        state: present
+
+    - name: Adicionar repositório e Instalar Docker
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
+        chmod a+r /etc/apt/keyrings/docker.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    - name: Garantir Docker rodando e usuário no grupo
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Adicionar usuário ubuntu ao grupo docker
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    # ---------------- EBS / DATA ---------------- #
+    - name: Criar ponto de montagem /data e montar EBS
+      file:
+        path: /data
+        state: directory
+        mode: '0755'
+
+    - name: Montar EBS em /data
+      mount:
+        path: /data
+        src: /dev/nvme1n1
+        fstype: ext4
+        state: mounted
+
+    - name: Garantir diretórios de persistência no EBS
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: '0700'
+      loop:
+        - { path: "{{ postgres_volume }}", owner: "{{ postgres_uid }}" }
+        - { path: "{{ n8n_volume }}", owner: "{{ n8n_uid }}" }
+
+    # ---------------- POSTGRES + N8N ---------------- #
+    - name: Criar docker-compose.yml
+      copy:
+        dest: /home/ubuntu/docker-compose.yml
+        content: |
+          version: '3.8'
+          services:
+            postgres:
+              image: postgres:15
+              container_name: postgres
+              restart: always
+              environment:
+                POSTGRES_USER: "{{ postgres_user }}"
+                POSTGRES_PASSWORD: "{{ postgres_password }}"
+                POSTGRES_DB: "{{ postgres_db }}"
+              volumes:
+                - "{{ postgres_volume }}:/var/lib/postgresql/data"
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U {{ postgres_user }} -d {{ postgres_db }}"]
+                interval: 5s
+                timeout: 5s
+                retries: 5
+
+            n8n:
+              image: n8nio/n8n
+              container_name: n8n
+              restart: always
+              environment:
+                - DB_TYPE=postgresdb
+                - DB_POSTGRESDB_HOST=postgres
+                - DB_POSTGRESDB_PORT=5432
+                - DB_POSTGRESDB_DATABASE={{ postgres_db }}
+                - DB_POSTGRESDB_USER={{ postgres_user }}
+                - DB_POSTGRESDB_PASSWORD={{ postgres_password }}
+                - N8N_ENCRYPTION_KEY={{ n8n_encryption_key }}
+                - N8N_PORT={{ n8n_port }}
+                - N8N_HOST=agentezap.xyz
+                - N8N_PROTOCOL=https
+                - WEBHOOK_URL=https://agentezap.xyz/
+                - NODE_ENV=production
+                - GENERIC_TIMEZONE=America/Sao_Paulo
+              volumes:
+                - "{{ n8n_volume }}:/home/node/.n8n"
+              ports:
+                - "{{ n8n_port }}:5678"
+              depends_on:
+                postgres:
+                  condition: service_healthy
+
+    - name: Subir containers via Docker Compose
+      command: docker compose up -d
+      args:
+        chdir: /home/ubuntu
+
+    - name: Esperar n8n responder
+      uri:
+        url: http://localhost:{{ n8n_port }}/healthz
+        status_code: 200
+      register: n8n_check
+      retries: 20
+      delay: 5
+      until: n8n_check.status == 200
+
+    - name: Verificar containers
+      command: docker compose ps
+      args:
+        chdir: /home/ubuntu
+      register: docker_ps
+
+    - name: Debug Output
+      debug:
+        msg: "{{ docker_ps.stdout_lines }}"

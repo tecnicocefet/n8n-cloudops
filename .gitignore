@@ -13,5 +13,15 @@ contexto.md
 *.tfvars.yaml
 *.tfvars.yml
 *.tfvars.tf
-
-notes.txt
+.vault_pass
+ notes.txt
+.vault_pass
+*.bak
+*.backup
+*.swp
+*.swo
+*.tmp
+*.log
+*.out
+*.err
+*.log.*
